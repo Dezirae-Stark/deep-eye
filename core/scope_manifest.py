@@ -173,9 +173,21 @@ class ScopeManifest:
 
         # Rule 3: lab mode region_lock
         if self.mode == "lab" and self.lab_region_lock is not None:
+            ip_to_check: Optional[str] = None
             if target.kind == "ip":
+                ip_to_check = host_or_ip
+            elif target.kind == "url" and host_or_ip:
+                # Resolve the host to an IP so region_lock can authorize URL
+                # targets without forcing operators to also list the domain
+                # under include_domains. Codex R2 P1.
+                import socket
                 try:
-                    if ipaddress.ip_address(host_or_ip) in self.lab_region_lock:
+                    ip_to_check = socket.gethostbyname(host_or_ip)
+                except (socket.gaierror, OSError):
+                    ip_to_check = None
+            if ip_to_check is not None:
+                try:
+                    if ipaddress.ip_address(ip_to_check) in self.lab_region_lock:
                         return ScopeResult(
                             True,
                             f"lab region_lock match {self.lab_region_lock}",

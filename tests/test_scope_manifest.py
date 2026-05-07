@@ -83,3 +83,60 @@ def test_cidr_target_with_malformed_value_rejected():
     m = _manifest()
     result = m.validate(Target(kind="cidr", value="not-a-cidr"))
     assert result.in_scope is False
+
+
+# Codex R2 P1: lab-mode region_lock only handled kind=="ip", but the CLI
+# flow sends URL targets to scope_check. A lab manifest that uses
+# region_lock instead of duplicating domain rules would reject every URL
+# scan with "no scope rule matched" — defeating the purpose of region_lock.
+
+def _lab_manifest(region_lock="198.51.100.0/24"):
+    return ScopeManifest.from_dict({
+        "version": 1,
+        "manifest_id": "lab-test",
+        "mode": "lab",
+        "created_at": "2025-01-01T00:00:00Z",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+        "authorization": {"contract_ref": "x", "contact": "y@z"},
+        "targets": {"include": {}, "exclude": {}},
+        "lab": {"region_lock": region_lock},
+    })
+
+
+def test_lab_region_lock_accepts_url_resolving_into_lock(monkeypatch):
+    """A URL whose resolved IP is inside the lab region_lock must be
+    accepted by the region rule alone — no domain include needed."""
+    import socket
+    monkeypatch.setattr(socket, "gethostbyname",
+                        lambda host: "198.51.100.42" if host == "lab.example" else "1.2.3.4")
+
+    m = _lab_manifest()
+    result = m.validate(Target(kind="url", value="https://lab.example"))
+    assert result.in_scope is True, f"got {result}"
+    assert "lab region_lock" in result.reason
+
+
+def test_lab_region_lock_rejects_url_resolving_outside_lock(monkeypatch):
+    """A URL whose IP is outside the lab region_lock must be rejected with
+    the region-lock reason (not 'no scope rule matched')."""
+    import socket
+    monkeypatch.setattr(socket, "gethostbyname",
+                        lambda host: "10.0.0.1")
+
+    m = _lab_manifest()
+    result = m.validate(Target(kind="url", value="https://elsewhere.example"))
+    assert result.in_scope is False
+    assert "outside lab region_lock" in result.reason
+
+
+def test_lab_region_lock_rejects_url_with_unresolvable_host(monkeypatch):
+    """If DNS fails, fall through cleanly — don't crash, and don't grant
+    scope just because we couldn't check."""
+    import socket
+    def _fail(host):
+        raise socket.gaierror("nope")
+    monkeypatch.setattr(socket, "gethostbyname", _fail)
+
+    m = _lab_manifest()
+    result = m.validate(Target(kind="url", value="https://nonexistent.example"))
+    assert result.in_scope is False
