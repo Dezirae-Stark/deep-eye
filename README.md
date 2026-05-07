@@ -237,6 +237,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **[Quick Start Guide](docs/QUICKSTART.md)** - Get started quickly
 - **[Architecture](docs/ARCHITECTURE.md)** - System design and structure
 - **[Testing Guide](docs/TESTING_GUIDE.md)** - Testing procedures
+- **[Recon Bridge Runbook](docs/recon-bridge-runbook.md)** - Operating the Shadowbroker bridge integration (v1.4.0)
 - **[Contributing](docs/CONTRIBUTING.md)** - How to contribute
 - **[Changelog](docs/CHANGELOG.md)** - Version history
 
