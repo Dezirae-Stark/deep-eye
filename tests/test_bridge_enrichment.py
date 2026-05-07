@@ -72,49 +72,95 @@ class TestRunBridgePhase:
         with pytest.raises(BridgeStartError, match="hex"):
             run_bridge_phase(_config(), "https://acme.com", FakeArgs())
 
-    def test_local_scope_manifest_rejects_before_bridge_call(self, monkeypatch, tmp_path):
-        """Codex R2 P2: scope_manifest_path is in config but was never read.
-        When local says no, we must reject WITHOUT calling the bridge —
-        defense-in-depth, fewer round-trips, clearer error message."""
-        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+    # Codex R3 P1: the previous "reject before bridge" behavior turned the
+    # local manifest into a hard gate. A stale local copy could block scans
+    # the bridge would legitimately allow. The local check is now ADVISORY:
+    # we always consult the bridge; the local result only drives logging.
+
+    def _local_scope_yaml(self, tmp_path, *, allowed_domain="acme.com",
+                          manifest_id="local-test"):
+        """Helper: write a minimal local manifest authorizing allowed_domain."""
         from datetime import datetime, timezone, timedelta
         import yaml
-
-        # Local manifest authorizes ONLY acme.com. Out-of-scope target should
-        # be rejected locally before any bridge call.
         scope_path = tmp_path / "manifest.yml"
         scope_path.write_text(yaml.safe_dump({
             "version": 1,
-            "manifest_id": "local-test",
+            "manifest_id": manifest_id,
             "mode": "engagement",
             "created_at": "2025-01-01T00:00:00Z",
             "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
             "authorization": {"contract_ref": "x", "contact": "y@z"},
-            "targets": {"include": {"domains": ["acme.com"]}},
+            "targets": {"include": {"domains": [allowed_domain]}},
         }))
+        return scope_path
 
+    def test_local_scope_no_does_not_block_when_bridge_says_yes(
+            self, monkeypatch, tmp_path, caplog):
+        """Codex R3 P1: a stale local manifest must NOT block scans the
+        bridge would allow. Local says no, bridge says yes → proceed.
+        Operators still see a warning that their local copy is stale."""
+        import logging
+        from core.bridge_enrichment import run_bridge_phase
+        from core.scope_manifest import ScopeResult
+
+        # Local manifest only allows acme.com — the bridge knows about other.test.
+        scope_path = self._local_scope_yaml(tmp_path, allowed_domain="acme.com")
         monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
 
-        bridge_call_count = {"n": 0}
-
-        class TripwireClient:
-            def scope_check(self, *a, **kw):
-                bridge_call_count["n"] += 1
-                raise AssertionError("must not call bridge when local says no")
-            def enrich(self, *a, **kw):
-                bridge_call_count["n"] += 1
-                raise AssertionError("must not enrich when local says no")
+        class FakeClient:
+            def scope_check(self, target, scope_token):
+                return ScopeResult(in_scope=True, reason="bridge allows",
+                                   manifest_id="bridge-m", mode="engagement")
+            def enrich(self, target):
+                return {"target": target, "feed_errors": {}}
             def close(self):
                 pass
 
         monkeypatch.setattr("core.bridge_enrichment._build_client",
-                            lambda *a, **kw: TripwireClient())
+                            lambda *a, **kw: FakeClient())
 
         cfg = _config()
         cfg["shadowbroker_bridge"]["scope_manifest_path"] = str(scope_path)
-        with pytest.raises(BridgeStartError, match="local scope"):
+
+        with caplog.at_level(logging.WARNING, logger="core.bridge_enrichment"):
+            result = run_bridge_phase(cfg, "https://other.test", FakeArgs())
+
+        assert result is not None, "bridge said yes — scan must proceed"
+        # Operator gets a stale-local warning so they know to refresh.
+        assert any(
+            "stale" in r.message.lower() or "refresh" in r.message.lower()
+            for r in caplog.records
+        ), (
+            "expected stale-local-manifest warning when local-no/bridge-yes; "
+            f"got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_local_scope_no_with_bridge_no_still_raises_start_error(
+            self, monkeypatch, tmp_path):
+        """Local-no AND bridge-no: still raise. The bridge is the authority,
+        and it agrees the target is out of scope. Reason should come from
+        the bridge, not the local cache."""
+        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+        from core.scope_manifest import ScopeResult
+
+        scope_path = self._local_scope_yaml(tmp_path, allowed_domain="acme.com")
+        monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
+
+        class FakeClient:
+            def scope_check(self, target, scope_token):
+                return ScopeResult(in_scope=False, reason="bridge denies too",
+                                   manifest_id="bridge-m", mode="engagement")
+            def close(self):
+                pass
+
+        monkeypatch.setattr("core.bridge_enrichment._build_client",
+                            lambda *a, **kw: FakeClient())
+
+        cfg = _config()
+        cfg["shadowbroker_bridge"]["scope_manifest_path"] = str(scope_path)
+
+        with pytest.raises(BridgeStartError, match="bridge denies too"):
             run_bridge_phase(cfg, "https://elsewhere.test", FakeArgs())
-        assert bridge_call_count["n"] == 0, "bridge was contacted despite local rejection"
 
     def test_local_scope_manifest_drift_warning_when_local_yes_remote_no(self, monkeypatch, tmp_path, caplog):
         """When local manifest says yes but the bridge says no, we still

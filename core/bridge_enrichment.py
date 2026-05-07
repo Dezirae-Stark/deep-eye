@@ -68,15 +68,11 @@ def run_bridge_phase(
     scope_token = args.bridge_scope_token or _require_cfg(bridge_cfg, "scope_token")
     timeout = float(bridge_cfg.get("timeout", 10.0))
 
-    # 0) Local scope check (defense-in-depth). Codex R2 P2: scope_manifest_path
-    # is shipped in config but used to be ignored entirely. Local rejection
-    # avoids out-of-scope round-trips and gives the operator a clearer error
-    # than waiting for the bridge to refuse.
+    # 0) Local scope check (advisory only). Codex R3 P1: this used to fail-
+    # close immediately on local-no, which turned the local manifest into a
+    # hard gate that could block scans the bridge would legitimately allow.
+    # The bridge is authoritative; the local check only drives logging.
     local_decision = _local_scope_check(bridge_cfg, target_url)
-    if local_decision is not None and not local_decision.in_scope:
-        raise BridgeStartError(
-            f"target {target_url!r} rejected by local scope manifest: {local_decision.reason}"
-        )
 
     client = _build_client(
         base_url=base_url,
@@ -87,15 +83,28 @@ def run_bridge_phase(
     try:
         # 1) Scope-check the target via the authoritative bridge. Fail-closed.
         result = _safe_scope_check(client, target_url, scope_token)
-        if not result.in_scope:
-            if local_decision is not None and local_decision.in_scope:
-                # Local manifest disagreed — operator's local copy is likely
-                # stale and broader than the live bridge manifest. Log loud.
+
+        # Compare local vs bridge — log on disagreement in either direction
+        # so operators see drift before they're blocked or surprised.
+        if local_decision is not None:
+            if local_decision.in_scope and not result.in_scope:
+                # Local says yes, bridge says no: local is broader/stale.
                 logger.warning(
                     "scope drift detected: local manifest accepts %r but "
                     "bridge rejects (%s). Refresh your local manifest copy.",
                     target_url, result.reason,
                 )
+            elif not local_decision.in_scope and result.in_scope:
+                # Local says no, bridge says yes: local is stricter/stale.
+                # Codex R3 P1 — we no longer block on this; just warn.
+                logger.warning(
+                    "local scope manifest is stricter than the bridge for %r "
+                    "(local: %s). Your local copy is stale or narrower than "
+                    "the live engagement; refresh it.",
+                    target_url, local_decision.reason,
+                )
+
+        if not result.in_scope:
             raise BridgeStartError(
                 f"target {target_url!r} not in scope for {scope_token!r}: {result.reason}"
             )
