@@ -74,12 +74,22 @@ def run_bridge_phase(
     # The bridge is authoritative; the local check only drives logging.
     local_decision = _local_scope_check(bridge_cfg, target_url)
 
-    client = _build_client(
-        base_url=base_url,
-        key_id=key_id,
-        key=secret,
-        timeout=timeout,
-    )
+    # Codex R3 P3: ShadowbrokerClient ctor raises ValueError on invalid
+    # base_url (e.g. missing scheme). Without this wrap, operators see a
+    # generic ValueError instead of the BridgeStartError fail-closed path,
+    # losing bridge-startup context in deep_eye.py's error handler.
+    try:
+        client = _build_client(
+            base_url=base_url,
+            key_id=key_id,
+            key=secret,
+            timeout=timeout,
+        )
+    except (ValueError, TypeError) as exc:
+        raise BridgeStartError(
+            f"shadowbroker_bridge client construction failed: {exc}. "
+            f"Check base_url={base_url!r} and key configuration."
+        ) from exc
     try:
         # 1) Scope-check the target via the authoritative bridge. Fail-closed.
         result = _safe_scope_check(client, target_url, scope_token)

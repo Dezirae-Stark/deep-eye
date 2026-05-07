@@ -301,6 +301,26 @@ class TestRunBridgePhase:
         assert result["target"] == "acme.com"
         assert result["shodan"]["ports"] == [443]
 
+    def test_invalid_base_url_raises_start_error_not_value_error(self, monkeypatch):
+        """Codex R3 P3: ShadowbrokerClient ctor raises ValueError on a
+        non-http(s) base_url. Without wrapping, the operator sees a generic
+        ValueError + traceback instead of the BridgeStartError fail-closed
+        path, so deep_eye.py's exit-2 handler never engages and the message
+        loses bridge-startup context.
+        """
+        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+
+        monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
+
+        # Use the real _build_client (ShadowbrokerClient ctor) — that's
+        # exactly the path Codex flagged. CLI override gives a bad URL.
+        with pytest.raises(BridgeStartError, match="base_url"):
+            run_bridge_phase(
+                _config(),
+                "https://acme.com",
+                FakeArgs(bridge_base_url="ftp://nope.test"),
+            )
+
     def test_cli_overrides_take_precedence_over_config(self, monkeypatch):
         from core.bridge_enrichment import run_bridge_phase
         from core.scope_manifest import ScopeResult
