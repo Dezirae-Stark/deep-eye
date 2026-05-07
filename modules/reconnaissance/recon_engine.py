@@ -4,8 +4,7 @@ Gathers intelligence about target
 """
 
 import socket
-import dns.resolver
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 from utils.logger import get_logger
 from modules.reconnaissance.osint_enhanced import EnhancedOSINT
@@ -26,13 +25,18 @@ class ReconEngine:
         # Initialize OSINT module
         self.osint_enhanced = EnhancedOSINT(http_client, config)
     
-    def run(self, target_url: str) -> Dict:
+    def run(self, target_url: str, bridge_intel: Optional[Dict] = None) -> Dict:
         """
         Run reconnaissance on target.
-        
+
         Args:
             target_url: Target URL
-            
+            bridge_intel: Optional Shadowbroker bridge enrichment dict from
+                run_bridge_phase(). When present, it's merged under
+                results['shadowbroker'] and CT log entries are also exposed
+                under results['shadowbroker']['ct_subdomains'] for downstream
+                modules to fold into their own subdomain lists.
+
         Returns:
             Reconnaissance results
         """
@@ -79,8 +83,35 @@ class ReconEngine:
         # Also collect basic DNS info
         if 'dns_records' not in results and results.get('domain'):
             results['dns'] = self._get_dns_records(results['domain'])
-        
+
+        # Shadowbroker bridge enrichment merge (Task 19).
+        if bridge_intel is not None:
+            results['shadowbroker'] = bridge_intel
+            ct_subs = self._extract_ct_subdomains(bridge_intel.get('ct_logs') or [])
+            if ct_subs:
+                results['shadowbroker']['ct_subdomains'] = ct_subs
+
         return results
+
+    @staticmethod
+    def _extract_ct_subdomains(ct_logs: List[Dict]) -> List[str]:
+        """Pull unique hostnames out of crt.sh-style ct_log entries.
+
+        crt.sh's name_value field can be multi-line (one host per line) when
+        a cert has SANs, so we split on newlines and dedupe. Empty entries
+        and obvious wildcards (*.example.com) are kept as-is — downstream
+        consumers can decide whether to expand or skip them.
+        """
+        seen: List[str] = []
+        for entry in ct_logs:
+            cn = (entry.get('cn') or '').strip()
+            if not cn:
+                continue
+            for line in cn.split('\n'):
+                host = line.strip()
+                if host and host not in seen:
+                    seen.append(host)
+        return seen
     
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL."""
@@ -89,10 +120,15 @@ class ReconEngine:
     
     def _get_dns_records(self, domain: str) -> Dict:
         """Get DNS records for domain."""
+        # Lazy import: dnspython is optional. Module must be importable even
+        # when dnspython is missing (deep_eye.py loads recon_engine at startup
+        # regardless of whether dns_records is in enabled_modules).
+        import dns.resolver
+
         records = {}
-        
+
         record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME']
-        
+
         for record_type in record_types:
             try:
                 answers = dns.resolver.resolve(domain, record_type)
@@ -100,7 +136,7 @@ class ReconEngine:
             except Exception as e:
                 logger.debug(f"No {record_type} records for {domain}: {e}")
                 records[record_type] = []
-        
+
         return records
     
     def _whois_lookup(self, domain: str) -> Dict:

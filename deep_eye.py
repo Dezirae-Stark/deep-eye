@@ -221,7 +221,8 @@ def main():
             proxy=proxy,
             custom_headers=custom_headers,
             cookies=cookies,
-            verbose=verbose
+            verbose=verbose,
+            bridge_intel=bridge_intel,  # None if bridge disabled (Task 19)
         )
         
         # Display scan configuration
