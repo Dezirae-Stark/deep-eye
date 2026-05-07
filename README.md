@@ -6,6 +6,10 @@
 
 An advanced AI-driven vulnerability scanner and penetration testing tool that integrates multiple AI providers (OpenAI, Grok, OLLAMA, Claude) with comprehensive security testing modules for automated bug hunting, intelligent payload generation, and professional reporting.
 
+> **🔱 Fork notice — `Dezirae-Stark/deep-eye` (v1.4.0)**
+>
+> This fork carries the **Shadowbroker recon-bridge integration**: pre-scan engagement-scope authorization (mandatory expiry, include/exclude rules) plus OSINT enrichment (Shodan, region dossier, CT logs, geopolitics) consumed via HMAC-signed `/bridge/*`. Hard fail-closed on out-of-scope targets, missing keys, or unreachable bridge. See **[docs/recon-bridge-runbook.md](docs/recon-bridge-runbook.md)** for setup, or PR [#1](https://github.com/Dezirae-Stark/deep-eye/pull/1) for the diff against upstream. Server-side companion: [`Dezirae-Stark/Shadowbroker`](https://github.com/Dezirae-Stark/Shadowbroker).
+
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-active-success)
 
@@ -237,6 +241,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **[Quick Start Guide](docs/QUICKSTART.md)** - Get started quickly
 - **[Architecture](docs/ARCHITECTURE.md)** - System design and structure
 - **[Testing Guide](docs/TESTING_GUIDE.md)** - Testing procedures
+- **[Recon Bridge Runbook](docs/recon-bridge-runbook.md)** - Operating the Shadowbroker bridge integration (v1.4.0)
 - **[Contributing](docs/CONTRIBUTING.md)** - How to contribute
 - **[Changelog](docs/CHANGELOG.md)** - Version history
 

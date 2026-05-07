@@ -39,7 +39,8 @@ class ScannerEngine:
         proxy: Optional[str] = None,
         custom_headers: Optional[Dict] = None,
         cookies: Optional[Dict] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        bridge_intel: Optional[Dict] = None,
     ):
         """Initialize the scanner engine."""
         self.target_url = target_url
@@ -48,6 +49,7 @@ class ScannerEngine:
         self.depth = depth
         self.threads = threads
         self.verbose = verbose
+        self.bridge_intel = bridge_intel  # From run_bridge_phase() — None if disabled
         
         # Initialize components
         self.http_client = HTTPClient(
@@ -264,7 +266,7 @@ class ScannerEngine:
     def run_reconnaissance(self) -> Dict:
         """Run reconnaissance modules."""
         console.print("[bold blue]🔎 Running reconnaissance...[/bold blue]")
-        recon_results = self.recon_engine.run(self.target_url)
+        recon_results = self.recon_engine.run(self.target_url, bridge_intel=self.bridge_intel)
         console.print("[green]✓[/green] Reconnaissance complete\n")
         return recon_results
     

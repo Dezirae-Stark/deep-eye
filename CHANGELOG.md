@@ -5,6 +5,21 @@ All notable changes to Deep Eye will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-07
+
+### Added
+
+#### Shadowbroker Recon Bridge Integration
+- **Scope authorization gate** - Targets are validated against an engagement scope manifest (mandatory expiry, include/exclude domain lists, IP CIDR + ASN matching, lab region locks) before any scan begins. Out-of-scope targets cause deep-eye to exit non-zero with a clear reason.
+- **Pre-scan OSINT enrichment** - `ShadowbrokerClient` consults a running Shadowbroker bridge for Shodan host data, region dossier (country/ASN/org), CT log entries, and geopolitics alerts. Results merge into `recon_engine` output under `shadowbroker.*`.
+- **HMAC-SHA256 signed channel** - Stdlib-only `modules/reconnaissance/hmac_auth.py` produces canonical signatures cross-compatible with the Shadowbroker server side. 60s timestamp window + replay-detection nonce cache.
+- **CLI flags** - `--no-bridge`, `--bridge-scope-token`, `--bridge-base-url` for per-run overrides without editing config.
+- **Fail-closed semantics** - Missing `BRIDGE_HMAC_KEY` env, out-of-scope target, and unreachable bridge all hard-exit. Operators flip `--no-bridge` to opt out explicitly.
+- **Operator runbook** - `docs/recon-bridge-runbook.md` covers setup, daily ops, key rotation, and troubleshooting.
+
+#### Robustness
+- `recon_engine` now lazy-imports `dns.resolver` so deep-eye starts cleanly without dnspython installed (`dns_records` is an optional module).
+
 ## [1.3.1] - 2025-12-30
 
 #### Fixed

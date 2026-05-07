@@ -97,7 +97,26 @@ Note: All scan options are configured in config.yaml
         action='store_true',
         help='Disable banner display'
     )
-    
+
+    # Shadowbroker bridge overrides (Task 18)
+    parser.add_argument(
+        '--no-bridge',
+        action='store_true',
+        help='Force-disable the Shadowbroker bridge for this run, even if enabled in config'
+    )
+    parser.add_argument(
+        '--bridge-scope-token',
+        type=str,
+        default=None,
+        help='Override shadowbroker_bridge.scope_token from config'
+    )
+    parser.add_argument(
+        '--bridge-base-url',
+        type=str,
+        default=None,
+        help='Override shadowbroker_bridge.base_url from config'
+    )
+
     return parser.parse_args()
 
 
@@ -174,7 +193,23 @@ def main():
         console.print(f"[bold blue]Initializing AI Provider: {ai_provider}[/bold blue]")
         ai_manager = AIProviderManager(config)
         ai_manager.set_provider(ai_provider)
-        
+
+        # Shadowbroker bridge enrichment phase (Task 18). Returns None when
+        # the bridge is disabled. Raises BridgeStartError on any fail-closed
+        # condition (out-of-scope, missing key, unreachable bridge).
+        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+        try:
+            bridge_intel = run_bridge_phase(config, target_url, args)
+            if bridge_intel is not None:
+                console.print(
+                    f"[bold green]✓[/bold green] Shadowbroker bridge: "
+                    f"target authorized, enrichment loaded "
+                    f"({len(bridge_intel.get('feed_errors') or {})} feed errors)"
+                )
+        except BridgeStartError as exc:
+            console.print(f"[bold red]Bridge refused start:[/bold red] {exc}")
+            sys.exit(2)
+
         # Initialize Scanner Engine
         console.print("[bold blue]Initializing Scanner Engine...[/bold blue]")
         scanner = ScannerEngine(
@@ -186,7 +221,8 @@ def main():
             proxy=proxy,
             custom_headers=custom_headers,
             cookies=cookies,
-            verbose=verbose
+            verbose=verbose,
+            bridge_intel=bridge_intel,  # None if bridge disabled (Task 19)
         )
         
         # Display scan configuration

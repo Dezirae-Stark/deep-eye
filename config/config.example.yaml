@@ -331,6 +331,44 @@ plugin_manager:
   plugin_directory: "plugins"  # Directory for custom vulnerability scanner plugins
   auto_load: true  # Automatically load all plugins on startup
 
+# Shadowbroker Recon Bridge (v1.4.0)
+# ---------------------------------------------------------------------------
+# Pre-scan enrichment from Shadowbroker's OSINT feeds (Shodan, region dossier,
+# CT logs, geopolitics). When enabled, deep-eye consults the bridge before
+# running its own recon: validates target against the engagement scope, then
+# pulls aggregated intel that recon_engine can use for adaptive scanning.
+#
+# Setup:
+#   1. Copy config/scope/example-engagement.yml to config/scope/<your-id>.yml
+#      and fill in your authorized targets + expiry date.
+#   2. Get your key_id and HMAC secret from the Shadowbroker operator.
+#      Export the secret in your shell — it MUST NOT live in this YAML:
+#          export BRIDGE_HMAC_KEY="<hex-secret-from-shadowbroker>"
+#   3. Set enabled: true and fill in base_url + key_id below.
+#
+# Without the env var the bridge stays disabled even if enabled: true here.
+# ---------------------------------------------------------------------------
+shadowbroker_bridge:
+  enabled: false  # Master switch. Off by default.
+
+  # Where Shadowbroker is reachable. HTTPS in production.
+  base_url: "http://localhost:8000"
+
+  # Identifier for your HMAC key as registered on the Shadowbroker side.
+  # The secret itself comes from $BRIDGE_HMAC_KEY (hex), not this file.
+  key_id: "deep-eye-prod-1"
+
+  # Which scope manifest the bridge should validate against. Must match a
+  # YAML file in Shadowbroker's SCOPE_MANIFEST_DIR.
+  scope_token: "example-engagement"
+
+  # Local copy of the scope manifest for client-side enforcement
+  # (defense-in-depth — bridge also checks).
+  scope_manifest_path: "config/scope/example-engagement.yml"
+
+  # HTTP timeout for bridge calls, in seconds.
+  timeout: 10
+
 # Notification System (v1.3.0)
 notifications:
   enabled: false  # Master switch for all notifications
