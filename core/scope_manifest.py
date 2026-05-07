@@ -173,35 +173,58 @@ class ScopeManifest:
 
         # Rule 3: lab mode region_lock
         if self.mode == "lab" and self.lab_region_lock is not None:
-            ip_to_check: Optional[str] = None
+            ips_to_check: list[str] = []
             if target.kind == "ip":
-                ip_to_check = host_or_ip
+                ips_to_check = [host_or_ip]
             elif target.kind == "url" and host_or_ip:
-                # Resolve the host to an IP so region_lock can authorize URL
-                # targets without forcing operators to also list the domain
-                # under include_domains. Codex R2 P1.
+                # Resolve the host so region_lock can authorize URL targets
+                # without forcing operators to duplicate domain rules.
+                # Codex R3 P2: getaddrinfo (dual-stack) replaces the old
+                # gethostbyname (IPv4-only) which silently rejected AAAA-only
+                # hosts and IPv6 region_lock manifests.
                 import socket
                 try:
-                    ip_to_check = socket.gethostbyname(host_or_ip)
+                    addrinfo = socket.getaddrinfo(
+                        host_or_ip, None,
+                        type=socket.SOCK_STREAM,
+                    )
+                    # sockaddr[0] is the IP for both AF_INET ((host, port))
+                    # and AF_INET6 ((host, port, flowinfo, scopeid)).
+                    seen: set[str] = set()
+                    for entry in addrinfo:
+                        ip = entry[4][0]
+                        if ip not in seen:
+                            seen.add(ip)
+                            ips_to_check.append(ip)
                 except (socket.gaierror, OSError):
-                    ip_to_check = None
-            if ip_to_check is not None:
-                try:
-                    if ipaddress.ip_address(ip_to_check) in self.lab_region_lock:
-                        return ScopeResult(
-                            True,
-                            f"lab region_lock match {self.lab_region_lock}",
-                            self.manifest_id,
-                            self.mode,
-                        )
+                    ips_to_check = []
+            if ips_to_check:
+                # Any address inside the lock authorizes; only reject when
+                # we resolved at least one and none matched. ip_address may
+                # raise TypeError if family doesn't match the network family
+                # (IPv4 vs IPv6) — treat as a non-match, not an error.
+                any_compared = False
+                for ip in ips_to_check:
+                    try:
+                        if ipaddress.ip_address(ip) in self.lab_region_lock:
+                            return ScopeResult(
+                                True,
+                                f"lab region_lock match {self.lab_region_lock}",
+                                self.manifest_id,
+                                self.mode,
+                            )
+                        any_compared = True  # at least one valid comparison ran
+                    except (ValueError, TypeError):
+                        # Invalid address string OR family mismatch with the
+                        # lock network. Skip and try the next resolved entry.
+                        continue
+                if any_compared:
                     return ScopeResult(
                         False,
                         f"outside lab region_lock {self.lab_region_lock}",
                         self.manifest_id,
                         self.mode,
                     )
-                except ValueError:
-                    pass
 
         # Rule 4: include match
         if target.kind == "url" and host_or_ip:
