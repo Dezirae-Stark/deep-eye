@@ -63,9 +63,9 @@ def run_bridge_phase(
         return None
 
     secret = _load_secret_from_env()  # raises BridgeStartError on miss/bad hex
-    base_url = args.bridge_base_url or bridge_cfg["base_url"]
-    key_id = bridge_cfg["key_id"]
-    scope_token = args.bridge_scope_token or bridge_cfg["scope_token"]
+    base_url = args.bridge_base_url or _require_cfg(bridge_cfg, "base_url")
+    key_id = _require_cfg(bridge_cfg, "key_id")
+    scope_token = args.bridge_scope_token or _require_cfg(bridge_cfg, "scope_token")
     timeout = float(bridge_cfg.get("timeout", 10.0))
 
     client = _build_client(
@@ -147,6 +147,22 @@ def _safe_enrich(client, host: str) -> dict[str, Any]:
     except BridgeScopeError as exc:
         # 4xx during enrich is unusual — surface it but classify as a hard fail.
         raise BridgeStartError(f"bridge rejected enrich: {exc}") from exc
+
+
+def _require_cfg(bridge_cfg: dict[str, Any], key: str) -> Any:
+    """Read a required key from the shadowbroker_bridge config block.
+
+    Raises BridgeStartError (not KeyError) when missing, so deep_eye.py's
+    fail-closed handler gives the operator a clear diagnostic instead of
+    a stack trace.
+    """
+    value = bridge_cfg.get(key)
+    if value is None or value == "":
+        raise BridgeStartError(
+            f"shadowbroker_bridge.{key} is not configured. "
+            f"Set it in config.yaml under shadowbroker_bridge."
+        )
+    return value
 
 
 def _load_secret_from_env() -> bytes:

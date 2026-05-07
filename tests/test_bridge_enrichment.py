@@ -67,6 +67,20 @@ class TestRunBridgePhase:
         with pytest.raises(BridgeStartError, match="hex"):
             run_bridge_phase(_config(), "https://acme.com", FakeArgs())
 
+    @pytest.mark.parametrize("missing_key", ["base_url", "key_id", "scope_token"])
+    def test_missing_required_config_key_raises_start_error(self, monkeypatch, missing_key):
+        """Codex P2: missing config keys must raise BridgeStartError with a
+        clear message identifying the key — not a bare KeyError that bypasses
+        our fail-closed error handling and looks like a generic crash to the
+        operator."""
+        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+
+        monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
+        cfg = _config()
+        del cfg["shadowbroker_bridge"][missing_key]
+        with pytest.raises(BridgeStartError, match=missing_key):
+            run_bridge_phase(cfg, "https://acme.com", FakeArgs())
+
     def test_out_of_scope_target_raises_start_error(self, monkeypatch):
         from core.bridge_enrichment import BridgeStartError, run_bridge_phase
         from core.scope_manifest import ScopeResult
