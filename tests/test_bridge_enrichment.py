@@ -24,14 +24,19 @@ class FakeArgs:
 
 def _config(**overrides) -> dict:
     """Minimal config with shadowbroker_bridge configured. Test override
-    individual keys via kwargs."""
+    individual keys via kwargs.
+
+    Note: scope_manifest_path is intentionally NOT set here — tests that
+    exercise the local-scope-enforcer path (Codex R2 P2) set it explicitly
+    pointing at a tmp_path manifest. Bridge-behavior tests get bridge-only
+    enforcement, which is what they're verifying.
+    """
     base = {
         "shadowbroker_bridge": {
             "enabled": True,
             "base_url": "http://bridge.test",
             "key_id": "test-key",
             "scope_token": "engagement-test",
-            "scope_manifest_path": "config/scope/example-engagement.yml",
             "timeout": 5.0,
         }
     }
@@ -66,6 +71,118 @@ class TestRunBridgePhase:
         monkeypatch.setenv("BRIDGE_HMAC_KEY", "not-hex-zzz")
         with pytest.raises(BridgeStartError, match="hex"):
             run_bridge_phase(_config(), "https://acme.com", FakeArgs())
+
+    def test_local_scope_manifest_rejects_before_bridge_call(self, monkeypatch, tmp_path):
+        """Codex R2 P2: scope_manifest_path is in config but was never read.
+        When local says no, we must reject WITHOUT calling the bridge —
+        defense-in-depth, fewer round-trips, clearer error message."""
+        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+        from datetime import datetime, timezone, timedelta
+        import yaml
+
+        # Local manifest authorizes ONLY acme.com. Out-of-scope target should
+        # be rejected locally before any bridge call.
+        scope_path = tmp_path / "manifest.yml"
+        scope_path.write_text(yaml.safe_dump({
+            "version": 1,
+            "manifest_id": "local-test",
+            "mode": "engagement",
+            "created_at": "2025-01-01T00:00:00Z",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "authorization": {"contract_ref": "x", "contact": "y@z"},
+            "targets": {"include": {"domains": ["acme.com"]}},
+        }))
+
+        monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
+
+        bridge_call_count = {"n": 0}
+
+        class TripwireClient:
+            def scope_check(self, *a, **kw):
+                bridge_call_count["n"] += 1
+                raise AssertionError("must not call bridge when local says no")
+            def enrich(self, *a, **kw):
+                bridge_call_count["n"] += 1
+                raise AssertionError("must not enrich when local says no")
+            def close(self):
+                pass
+
+        monkeypatch.setattr("core.bridge_enrichment._build_client",
+                            lambda *a, **kw: TripwireClient())
+
+        cfg = _config()
+        cfg["shadowbroker_bridge"]["scope_manifest_path"] = str(scope_path)
+        with pytest.raises(BridgeStartError, match="local scope"):
+            run_bridge_phase(cfg, "https://elsewhere.test", FakeArgs())
+        assert bridge_call_count["n"] == 0, "bridge was contacted despite local rejection"
+
+    def test_local_scope_manifest_drift_warning_when_local_yes_remote_no(self, monkeypatch, tmp_path, caplog):
+        """When local manifest says yes but the bridge says no, we still
+        fail closed (the bridge is authoritative) but log a drift warning
+        so operators know the local copy is out of date."""
+        from core.bridge_enrichment import BridgeStartError, run_bridge_phase
+        from core.scope_manifest import ScopeResult
+        from datetime import datetime, timezone, timedelta
+        import logging
+        import yaml
+
+        scope_path = tmp_path / "manifest.yml"
+        scope_path.write_text(yaml.safe_dump({
+            "version": 1,
+            "manifest_id": "local-stale",
+            "mode": "engagement",
+            "created_at": "2025-01-01T00:00:00Z",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "authorization": {"contract_ref": "x", "contact": "y@z"},
+            "targets": {"include": {"domains": ["acme.com"]}},
+        }))
+
+        monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
+
+        class FakeClient:
+            def scope_check(self, target, scope_token):
+                return ScopeResult(in_scope=False, reason="bridge says no",
+                                   manifest_id="m", mode="engagement")
+            def close(self):
+                pass
+
+        monkeypatch.setattr("core.bridge_enrichment._build_client",
+                            lambda *a, **kw: FakeClient())
+
+        cfg = _config()
+        cfg["shadowbroker_bridge"]["scope_manifest_path"] = str(scope_path)
+        with caplog.at_level(logging.WARNING, logger="core.bridge_enrichment"):
+            with pytest.raises(BridgeStartError):
+                run_bridge_phase(cfg, "https://acme.com", FakeArgs())
+        assert any("drift" in r.message.lower() for r in caplog.records), (
+            "expected a drift warning when local-yes/remote-no"
+        )
+
+    def test_missing_local_manifest_path_logged_but_continues(self, monkeypatch, tmp_path):
+        """If scope_manifest_path is set but the file doesn't exist, log a
+        warning and proceed with bridge-only enforcement. Don't crash —
+        defense-in-depth is opportunistic, the bridge is authoritative."""
+        from core.bridge_enrichment import run_bridge_phase
+        from core.scope_manifest import ScopeResult
+
+        monkeypatch.setenv("BRIDGE_HMAC_KEY", "ab" * 16)
+
+        class FakeClient:
+            def scope_check(self, *a, **kw):
+                return ScopeResult(in_scope=True, reason="ok", manifest_id="m", mode="engagement")
+            def enrich(self, *a, **kw):
+                return {"target": "acme.com"}
+            def close(self):
+                pass
+
+        monkeypatch.setattr("core.bridge_enrichment._build_client",
+                            lambda *a, **kw: FakeClient())
+
+        cfg = _config()
+        cfg["shadowbroker_bridge"]["scope_manifest_path"] = str(tmp_path / "missing.yml")
+        result = run_bridge_phase(cfg, "https://acme.com", FakeArgs())
+        # Bridge said yes, local was unavailable — we still got intel.
+        assert result is not None
 
     @pytest.mark.parametrize("missing_key", ["base_url", "key_id", "scope_token"])
     def test_missing_required_config_key_raises_start_error(self, monkeypatch, missing_key):

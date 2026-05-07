@@ -68,6 +68,16 @@ def run_bridge_phase(
     scope_token = args.bridge_scope_token or _require_cfg(bridge_cfg, "scope_token")
     timeout = float(bridge_cfg.get("timeout", 10.0))
 
+    # 0) Local scope check (defense-in-depth). Codex R2 P2: scope_manifest_path
+    # is shipped in config but used to be ignored entirely. Local rejection
+    # avoids out-of-scope round-trips and gives the operator a clearer error
+    # than waiting for the bridge to refuse.
+    local_decision = _local_scope_check(bridge_cfg, target_url)
+    if local_decision is not None and not local_decision.in_scope:
+        raise BridgeStartError(
+            f"target {target_url!r} rejected by local scope manifest: {local_decision.reason}"
+        )
+
     client = _build_client(
         base_url=base_url,
         key_id=key_id,
@@ -75,9 +85,17 @@ def run_bridge_phase(
         timeout=timeout,
     )
     try:
-        # 1) Scope-check the target. Fail-closed if out of scope.
+        # 1) Scope-check the target via the authoritative bridge. Fail-closed.
         result = _safe_scope_check(client, target_url, scope_token)
         if not result.in_scope:
+            if local_decision is not None and local_decision.in_scope:
+                # Local manifest disagreed — operator's local copy is likely
+                # stale and broader than the live bridge manifest. Log loud.
+                logger.warning(
+                    "scope drift detected: local manifest accepts %r but "
+                    "bridge rejects (%s). Refresh your local manifest copy.",
+                    target_url, result.reason,
+                )
             raise BridgeStartError(
                 f"target {target_url!r} not in scope for {scope_token!r}: {result.reason}"
             )
@@ -184,3 +202,40 @@ def _target_to_host(target_url: str) -> str:
     """Convert the deep-eye CLI target into a bare hostname for /bridge/enrich."""
     parsed = urlparse(target_url)
     return parsed.hostname or target_url
+
+
+def _local_scope_check(bridge_cfg: dict, target_url: str):
+    """Run the optional client-side ScopeEnforcer.
+
+    Returns the local ScopeResult, or None if no local manifest is configured
+    or the configured path doesn't exist. Defense-in-depth only — the bridge
+    is always authoritative. We never grant scope on local-yes alone.
+    """
+    from pathlib import Path
+
+    path_str = (bridge_cfg.get("scope_manifest_path") or "").strip()
+    if not path_str:
+        return None
+    path = Path(path_str)
+    if not path.exists():
+        logger.warning(
+            "shadowbroker_bridge.scope_manifest_path=%s does not exist; "
+            "skipping local scope check (bridge-only enforcement).",
+            path_str,
+        )
+        return None
+    try:
+        from core.scope_enforcer import ScopeEnforcer
+        from core.scope_manifest import Target
+
+        enforcer = ScopeEnforcer(path)
+        result = enforcer.check(Target(kind="url", value=target_url))
+        return result
+    except Exception as exc:
+        # Local manifest broken — log and continue with bridge-only.
+        # Bridge is authoritative; we don't fail closed on local errors.
+        logger.warning(
+            "local scope manifest %s could not be loaded (%s); "
+            "skipping local check.", path_str, exc,
+        )
+        return None
