@@ -49,3 +49,37 @@ def test_validate_matches_shadowbroker_semantics(kind, value, expected_in_scope)
 def test_expired_manifest_blocks_everything():
     m = _manifest(expires_in_days=-1)
     assert m.validate(Target(kind="url", value="https://acme.com")).in_scope is False
+
+
+# Codex P1: validate() must handle Target.kind == "cidr". The Target dataclass
+# documents "cidr" as a valid kind and _resolve_target_for_match parses it,
+# but ScopeManifest.validate previously had no branch for it — every cidr
+# target fell through to "no scope rule matched", so any client requesting
+# CIDR-scope authorization got refused even when the CIDR was allow-listed.
+
+@pytest.mark.parametrize("cidr,expected", [
+    # Exact match against the allow-listed CIDR.
+    ("198.51.100.0/24", True),
+    # Strict subnet of the allow-listed CIDR.
+    ("198.51.100.128/25", True),
+    # Single-host CIDR inside the allow-listed CIDR.
+    ("198.51.100.42/32", True),
+    # Outside the allow-listed CIDR — must reject.
+    ("10.0.0.0/24", False),
+    # Superset of the allow-listed CIDR — must reject (broader than authorized).
+    ("198.51.0.0/16", False),
+])
+def test_cidr_target_validates_against_include_cidrs(cidr, expected):
+    m = _manifest()
+    result = m.validate(Target(kind="cidr", value=cidr))
+    assert result.in_scope is expected, (
+        f"CIDR {cidr!r}: expected in_scope={expected}, got {result}"
+    )
+
+
+def test_cidr_target_with_malformed_value_rejected():
+    """Garbage CIDR values must not 200-with-true; they should fall through
+    to the default 'no scope rule matched' rejection path."""
+    m = _manifest()
+    result = m.validate(Target(kind="cidr", value="not-a-cidr"))
+    assert result.in_scope is False
